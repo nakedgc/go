@@ -1,3 +1,21 @@
+# Naked Go Compiler
+
+This is a complete fork of the [go repo](https://go.googlesource.com/go/), but it only changes *gc*, the Go Compiler. This version of gc is friendlier than the default version, as you can tell it to shut up about certain errors (like unused variables).
+
+	[23:01] <johto> there are several ways of enforcing that people don't go out naked in public. 
+	Go's way is makign sure everyone showers clothed. I prefer the world where I can choose to 
+	shower naked, so long as I put something on  before I leave my front door
+
+
+**TODO**:
+  - Documentation
+  - Complete list of all irritating errors that can be turned into warnings (currently only unused variables)
+  - Turn the errors in warnings when asked
+  - Cleaner code (i.e. create Yywarning function)
+  - Perhaps a little testing?
+
+
+
 # The Go Programming Language
 
 Go is an open source programming language that makes it easy to build simple,
