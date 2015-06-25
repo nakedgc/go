@@ -221,6 +221,7 @@ func Main() {
 	obj.Flagcount("live", "debug liveness analysis", &debuglive)
 	obj.Flagcount("m", "print optimization decisions", &Debug['m'])
 	obj.Flagcount("nolocalimports", "reject local (relative) imports", &nolocalimports)
+	obj.Flagcount("warningsaserrors", "turn all warnings into errors", &warningsaserrors)
 	obj.Flagstr("o", "write output to `file`", &outfile)
 	obj.Flagstr("p", "set expected package import `path`", &myimportpath)
 	obj.Flagcount("pack", "write package file instead of object file", &writearchive)

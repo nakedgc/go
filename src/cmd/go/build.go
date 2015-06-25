@@ -157,6 +157,7 @@ var buildRace bool           // -race flag
 var buildToolExec []string   // -toolexec flag
 var buildBuildmode string    // -buildmode flag
 var buildLinkshared bool     // -linkshared flag
+var buildWarningNoError bool // -Wno-error
 
 var buildContext = build.Default
 var buildToolchain toolchain = noToolchain{}
@@ -214,6 +215,7 @@ func addBuildFlags(cmd *Command) {
 	cmd.Flag.Var((*stringsFlag)(&buildToolExec), "toolexec", "")
 	cmd.Flag.StringVar(&buildBuildmode, "buildmode", "default", "")
 	cmd.Flag.BoolVar(&buildLinkshared, "linkshared", false, "")
+	cmd.Flag.BoolVar(&buildWarningNoError, "Wno-error", false, "")
 }
 
 func addBuildFlagsNX(cmd *Command) {
@@ -377,6 +379,9 @@ func buildModeInit() {
 			// TODO(mwhudson): remove -w when that gets fixed in linker.
 			buildLdflags = append(buildLdflags, "-linkshared", "-w")
 		}
+	}
+	if buildWarningNoError {
+		buildGcflags = append(buildGcflags, "-warningsaserrors=0")
 	}
 	if codegenArg != "" {
 		if gccgo {

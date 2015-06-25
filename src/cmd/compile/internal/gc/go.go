@@ -482,6 +482,8 @@ var safemode int
 
 var nolocalimports int
 
+var warningsaserrors int = 1
+
 var lexbuf bytes.Buffer
 var strbuf bytes.Buffer
 
