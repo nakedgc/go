@@ -4,21 +4,25 @@ This is a complete fork of the [go repo](https://go.googlesource.com/go/), but i
 
 This project aims to provide a drop-in replacement for the standard 'go' executable.
 
+We currently turn errors about unused variables and unused packages into warnings when the flag `-Wno-error` is passed.
+
+Example:
+
+	go build -Wno-error unused_vars.go
+	...
+	./unused_vars.go:7: [WARNING] a declared and not used
+	...
+	Hello world!
+
+If you still don't get it, there are [more examples](https://github.com/nakedgc/etc).
+
 	[23:01] <johto> there are several ways of enforcing that people don't go out naked
 	in public. Go's way is makign sure everyone showers clothed. I prefer the world
 	where I can choose to shower naked, so long as I put something on before I leave 
 	my front door
 
-We currently turn errors about unused variables and unused packages into warnings when the flag `-Wno-error` is passed.
-
-Example:
-
-	go build -Wno-error hello.go
-
 **TODO**:
-  - Documentation in `go --help`
-  - Complete list of all irritating errors that can be turned into warnings (currently only unused variables)
-  - Repo with some code that should compile with ngc
+  - Extending the list of all irritating errors that can be turned into warnings (currently only unused variables/packages) (if there are any)
 
 <br/>
 <br/>

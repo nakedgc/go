@@ -56,6 +56,9 @@ The -i flag installs the packages that are dependencies of the target.
 The build flags are shared by the build, clean, get, install, list, run,
 and test commands:
 
+	-Wno-error
+		turns nonfatal errors (unused variables and unused packages)
+		into warnings, allowing the program to compile.
 	-a
 		force rebuilding of packages that are already up-to-date.
 		In Go releases, does not apply to the standard library.
