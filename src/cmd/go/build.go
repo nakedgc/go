@@ -157,7 +157,8 @@ var buildRace bool           // -race flag
 var buildToolExec []string   // -toolexec flag
 var buildBuildmode string    // -buildmode flag
 var buildLinkshared bool     // -linkshared flag
-var buildWarningNoError bool // -Wno-error
+// NakedGC
+var buildNonFatalWarnings bool // -Wno-error
 
 var buildContext = build.Default
 var buildToolchain toolchain = noToolchain{}
@@ -215,7 +216,9 @@ func addBuildFlags(cmd *Command) {
 	cmd.Flag.Var((*stringsFlag)(&buildToolExec), "toolexec", "")
 	cmd.Flag.StringVar(&buildBuildmode, "buildmode", "default", "")
 	cmd.Flag.BoolVar(&buildLinkshared, "linkshared", false, "")
-	cmd.Flag.BoolVar(&buildWarningNoError, "Wno-error", false, "")
+	
+	// NakedGC
+	cmd.Flag.BoolVar(&buildNonFatalWarnings, "Wno-error", false, "")
 }
 
 func addBuildFlagsNX(cmd *Command) {
@@ -380,9 +383,12 @@ func buildModeInit() {
 			buildLdflags = append(buildLdflags, "-linkshared", "-w")
 		}
 	}
-	if buildWarningNoError {
-		buildGcflags = append(buildGcflags, "-warningsaserrors=0")
+	
+	// NakedGC
+	if buildNonFatalWarnings {
+		buildGcflags = append(buildGcflags, "-nonfatalwarnings=1")
 	}
+	
 	if codegenArg != "" {
 		if gccgo {
 			buildGccgoflags = append(buildGccgoflags, codegenArg)

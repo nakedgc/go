@@ -51,15 +51,13 @@ func walk(fn *Node) {
 				continue
 			}
 			lineno = defn.Left.Lineno
-			if warningsaserrors != 0 {
-				Yyerror("%v declared and not used", l.N.Sym)
-			}
+			// NGC!
+			YynonFatalError("%v declared and not used", l.N.Sym)
 			defn.Left.Used = true // suppress repeats
 		} else {
 			lineno = l.N.Lineno
-			if warningsaserrors != 0 {
-				Yyerror("%v declared and not used", l.N.Sym)
-			}
+			// NGC!
+			YynonFatalError("%v declared and not used", l.N.Sym)
 		}
 	}
 

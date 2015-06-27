@@ -470,7 +470,11 @@ var outfile string
 
 var bout *obj.Biobuf
 
+// This counts the errors
 var nerrors int
+
+// NGC: so this counts the warnings
+var nwarnings int = 0
 
 var nsavederrors int
 
@@ -482,7 +486,8 @@ var safemode int
 
 var nolocalimports int
 
-var warningsaserrors int = 1
+// Option for NakedGC
+var nonfatalwarnings bool = false
 
 var lexbuf bytes.Buffer
 var strbuf bytes.Buffer

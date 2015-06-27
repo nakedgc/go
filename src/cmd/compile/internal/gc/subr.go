@@ -118,6 +118,23 @@ func yyerrorl(line int, format string, args ...interface{}) {
 	}
 }
 
+
+// Modification by NakedGC
+func yynonFatalErrorl(line int, format string, args ...interface{}) {
+	if nonfatalwarnings {
+		// adderr should not be responsible for crashing AFAIK
+		adderr(line, "[WARNING] " + format, args...)
+
+		hcrash() // this sounds worse, but I'll leave it here for now
+		//nerrors++  // Not an actual error, so not counting
+		nwarnings++
+		Flusherrors()
+	} else {
+		// Just forward the call to the real yyerrorl
+		yyerrorl(line, format, args...)
+	}
+}
+
 var yyerror_lastsyntax int
 
 func Yyerror(format string, args ...interface{}) {
@@ -168,6 +185,24 @@ func Yyerror(format string, args ...interface{}) {
 	}
 }
 
+// Modification by NakedGC
+func YynonFatalError(format string, args ...interface{}) {
+	if (nonfatalwarnings) {
+		msg := fmt.Sprintf("[WARNING] " + format, args...)
+		// Syntax errors should never be warnings of course
+		//if strings.HasPrefix(msg, "syntax error") { ... }
+
+		adderr(parserline(), "%s", msg)
+		
+		hcrash()
+		//nerrors++
+		nwarnings++
+		Flusherrors()
+	} else {
+		Yyerror(format, args)
+	}
+}
+
 func Warn(fmt_ string, args ...interface{}) {
 	adderr(parserline(), fmt_, args...)
 
@@ -207,6 +242,7 @@ func linehistpragma(file string) {
 }
 
 func linehistpush(file string) {
+	Ctxt.LineHist.Push(int(lexlineno), file)
 	if Debug['i'] != 0 {
 		fmt.Printf("import %s at line %v\n", file, Ctxt.Line(int(lexlineno)))
 	}
@@ -342,7 +378,8 @@ func importdot(opkg *Pkg, pack *Node) {
 
 	if n == 0 {
 		// can't possibly be used - there were no symbols
-		yyerrorl(int(pack.Lineno), "imported and not used: %q", opkg.Path)
+		// NGC!
+		yynonFatalErrorl(int(pack.Lineno), "imported and not used: %q", opkg.Path)
 	}
 }
 

@@ -221,7 +221,12 @@ func Main() {
 	obj.Flagcount("live", "debug liveness analysis", &debuglive)
 	obj.Flagcount("m", "print optimization decisions", &Debug['m'])
 	obj.Flagcount("nolocalimports", "reject local (relative) imports", &nolocalimports)
-	obj.Flagcount("warningsaserrors", "turn all warnings into errors", &warningsaserrors)
+	
+	// NakedGC
+	// TODO: there must be a way to turn this flag into a bool directly...
+	var nfwNum int = 0
+	obj.Flagcount("nonfatalwarnings", "turn all nonfatal errors into warnings", &nfwNum)
+	
 	obj.Flagstr("o", "write output to `file`", &outfile)
 	obj.Flagstr("p", "set expected package import `path`", &myimportpath)
 	obj.Flagcount("pack", "write package file instead of object file", &writearchive)
@@ -247,7 +252,13 @@ func Main() {
 	obj.Flagstr("memprofile", "write memory profile to `file`", &memprofile)
 	obj.Flagint64("memprofilerate", "set runtime.MemProfileRate to `rate`", &memprofilerate)
 	obj.Flagparse(usage)
-
+	
+	// NakedGC
+	if nfwNum == 1 {
+		//fmt.Println("NGC: Turning nonfatal errors into warnings.")
+		nonfatalwarnings = true
+	}
+	
 	if flag_dynlink {
 		flag_shared = 1
 	}
@@ -2580,9 +2591,11 @@ func pkgnotused(lineno int, path string, name string) {
 		elem = elem[i+1:]
 	}
 	if name == "" || elem == name {
-		yyerrorl(int(lineno), "imported and not used: %q", path)
+		// NGC!
+		yynonFatalErrorl(int(lineno), "imported and not used: %q", path)
 	} else {
-		yyerrorl(int(lineno), "imported and not used: %q as %s", path, name)
+		// NGC!
+		yynonFatalErrorl(int(lineno), "imported and not used: %q as %s", path, name)
 	}
 }
 
