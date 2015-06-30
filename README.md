@@ -21,10 +21,18 @@ If you still don't get it, there are [more examples](https://github.com/nakedgc/
 	where I can choose to shower naked, so long as I put something on before I leave 
 	my front door
 
+## [gb](https://github.com/constabulary/gb) instructions
+
+Build gb with $GOROOT set to a clone of this repo, afterwards you can build with `gb build -gcflags='-nonfatalwarnings=1'`.
+
+<hr/>
+
+<br/>
+
 **TODO**:
   - Extending the list of all irritating errors that can be turned into warnings (currently only unused variables/packages) (if there are any)
 
-<br/>
+
 <br/>
 <hr/>
 (original readme)
