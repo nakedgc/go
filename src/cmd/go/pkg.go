@@ -98,6 +98,34 @@ type Package struct {
 	coverVars    map[string]*CoverVar // variables created by coverage analysis
 	omitDWARF    bool                 // tell linker not to write DWARF information
 	buildID      string               // expected build ID for generated package
+	gobinSubdir  bool                 // install target would be subdir of GOBIN
+}
+
+// vendored returns the vendor-resolved version of imports,
+// which should be p.TestImports or p.XTestImports, NOT p.Imports.
+// The imports in p.TestImports and p.XTestImports are not recursively
+// loaded during the initial load of p, so they list the imports found in
+// the source file, but most processing should be over the vendor-resolved
+// import paths. We do this resolution lazily both to avoid file system work
+// and because the eventual real load of the test imports (during 'go test')
+// can produce better error messages if it starts with the original paths.
+// The initial load of p loads all the non-test imports and rewrites
+// the vendored paths, so nothing should ever call p.vendored(p.Imports).
+func (p *Package) vendored(imports []string) []string {
+	if len(imports) > 0 && len(p.Imports) > 0 && &imports[0] == &p.Imports[0] {
+		panic("internal error: p.vendored(p.Imports) called")
+	}
+	seen := make(map[string]bool)
+	var all []string
+	for _, path := range imports {
+		path, _ = vendoredImportPath(p, path)
+		if !seen[path] {
+			seen[path] = true
+			all = append(all, path)
+		}
+	}
+	sort.Strings(all)
+	return all
 }
 
 // CoverVar holds the name of the generated coverage variables targeting the named file.
@@ -108,6 +136,13 @@ type CoverVar struct {
 
 func (p *Package) copyBuild(pp *build.Package) {
 	p.build = pp
+
+	if pp.PkgTargetRoot != "" && buildPkgdir != "" {
+		old := pp.PkgTargetRoot
+		pp.PkgRoot = buildPkgdir
+		pp.PkgTargetRoot = buildPkgdir
+		pp.PkgObj = filepath.Join(buildPkgdir, strings.TrimPrefix(pp.PkgObj, old))
+	}
 
 	p.Dir = pp.Dir
 	p.ImportPath = pp.ImportPath
@@ -241,11 +276,29 @@ func makeImportValid(r rune) rune {
 	return r
 }
 
+// Mode flags for loadImport and download (in get.go).
+const (
+	// useVendor means that loadImport should do vendor expansion
+	// (provided the vendoring experiment is enabled).
+	// That is, useVendor means that the import path came from
+	// a source file and has not been vendor-expanded yet.
+	// Every import path should be loaded initially with useVendor,
+	// and then the expanded version (with the /vendor/ in it) gets
+	// recorded as the canonical import path. At that point, future loads
+	// of that package must not pass useVendor, because
+	// disallowVendor will reject direct use of paths containing /vendor/.
+	useVendor = 1 << iota
+
+	// getTestDeps is for download (part of "go get") and indicates
+	// that test dependencies should be fetched too.
+	getTestDeps
+)
+
 // loadImport scans the directory named by path, which must be an import path,
 // but possibly a local import path (an absolute file system path or one beginning
 // with ./ or ../).  A local relative path is interpreted relative to srcDir.
 // It returns a *Package describing the package found in that directory.
-func loadImport(path, srcDir string, parent *Package, stk *importStack, importPos []token.Position) *Package {
+func loadImport(path, srcDir string, parent *Package, stk *importStack, importPos []token.Position, mode int) *Package {
 	stk.push(path)
 	defer stk.pop()
 
@@ -260,7 +313,7 @@ func loadImport(path, srcDir string, parent *Package, stk *importStack, importPo
 	var vendorSearch []string
 	if isLocal {
 		importPath = dirToImportPath(filepath.Join(srcDir, path))
-	} else {
+	} else if mode&useVendor != 0 {
 		path, vendorSearch = vendoredImportPath(parent, path)
 		importPath = path
 	}
@@ -269,8 +322,10 @@ func loadImport(path, srcDir string, parent *Package, stk *importStack, importPo
 		if perr := disallowInternal(srcDir, p, stk); perr != p {
 			return perr
 		}
-		if perr := disallowVendor(srcDir, origPath, p, stk); perr != p {
-			return perr
+		if mode&useVendor != 0 {
+			if perr := disallowVendor(srcDir, origPath, p, stk); perr != p {
+				return perr
+			}
 		}
 		return reusePackage(p, stk)
 	}
@@ -326,8 +381,10 @@ func loadImport(path, srcDir string, parent *Package, stk *importStack, importPo
 	if perr := disallowInternal(srcDir, p, stk); perr != p {
 		return perr
 	}
-	if perr := disallowVendor(srcDir, origPath, p, stk); perr != p {
-		return perr
+	if mode&useVendor != 0 {
+		if perr := disallowVendor(srcDir, origPath, p, stk); perr != p {
+			return perr
+		}
 	}
 
 	return p
@@ -351,16 +408,16 @@ func isDir(path string) bool {
 // If parent is x/y/z, then path might expand to x/y/z/vendor/path, x/y/vendor/path,
 // x/vendor/path, vendor/path, or else stay x/y/z if none of those exist.
 // vendoredImportPath returns the expanded path or, if no expansion is found, the original.
-// If no epxansion is found, vendoredImportPath also returns a list of vendor directories
+// If no expansion is found, vendoredImportPath also returns a list of vendor directories
 // it searched along the way, to help prepare a useful error message should path turn
 // out not to exist.
 func vendoredImportPath(parent *Package, path string) (found string, searched []string) {
-	if parent == nil || !go15VendorExperiment {
+	if parent == nil || parent.Root == "" || !go15VendorExperiment {
 		return path, nil
 	}
 	dir := filepath.Clean(parent.Dir)
-	root := filepath.Clean(parent.Root)
-	if !strings.HasPrefix(dir, root) || len(dir) <= len(root) || dir[len(root)] != filepath.Separator {
+	root := filepath.Join(parent.Root, "src")
+	if !hasFilePathPrefix(dir, root) || len(dir) <= len(root) || dir[len(root)] != filepath.Separator {
 		fatalf("invalid vendoredImportPath: dir=%q root=%q separator=%q", dir, root, string(filepath.Separator))
 	}
 	vpath := "vendor/" + path
@@ -552,7 +609,11 @@ func disallowVendorVisibility(srcDir string, p *Package, stk *importStack) *Pack
 	if i > 0 {
 		i-- // rewind over slash in ".../vendor"
 	}
-	parent := p.Dir[:i+len(p.Dir)-len(p.ImportPath)]
+	truncateTo := i + len(p.Dir) - len(p.ImportPath)
+	if truncateTo < 0 || len(p.Dir) < truncateTo {
+		return p
+	}
+	parent := p.Dir[:truncateTo]
 	if hasPathPrefix(filepath.ToSlash(srcDir), filepath.ToSlash(parent)) {
 		return p
 	}
@@ -612,10 +673,6 @@ var goTools = map[string]targetDir{
 	"cmd/newlink":                          toTool,
 	"cmd/nm":                               toTool,
 	"cmd/objdump":                          toTool,
-	"cmd/old5a":                            toTool,
-	"cmd/old6a":                            toTool,
-	"cmd/old8a":                            toTool,
-	"cmd/old9a":                            toTool,
 	"cmd/pack":                             toTool,
 	"cmd/pprof":                            toTool,
 	"cmd/trace":                            toTool,
@@ -714,6 +771,11 @@ func (p *Package) load(stk *importStack, bp *build.Package, err error) *Package 
 		} else if p.build.BinDir != "" {
 			// Install to GOBIN or bin of GOPATH entry.
 			p.target = filepath.Join(p.build.BinDir, elem)
+			if !p.Goroot && strings.Contains(elem, "/") && gobin != "" {
+				// Do not create $GOBIN/goos_goarch/elem.
+				p.target = ""
+				p.gobinSubdir = true
+			}
 		}
 		if goTools[p.ImportPath] == toTool {
 			// This is for 'go tool'.
@@ -774,7 +836,7 @@ func (p *Package) load(stk *importStack, bp *build.Package, err error) *Package 
 			importPaths = append(importPaths, "runtime/race")
 		}
 		// On ARM with GOARM=5, everything depends on math for the link.
-		if p.ImportPath == "main" && goarch == "arm" {
+		if p.Name == "main" && goarch == "arm" {
 			importPaths = append(importPaths, "math")
 		}
 	}
@@ -834,7 +896,7 @@ func (p *Package) load(stk *importStack, bp *build.Package, err error) *Package 
 		if path == "C" {
 			continue
 		}
-		p1 := loadImport(path, p.Dir, p, stk, p.build.ImportPos[path])
+		p1 := loadImport(path, p.Dir, p, stk, p.build.ImportPos[path], useVendor)
 		if p1.Name == "main" {
 			p.Error = &PackageError{
 				ImportStack: stk.copy(),
@@ -865,7 +927,12 @@ func (p *Package) load(stk *importStack, bp *build.Package, err error) *Package 
 		deps[path] = p1
 		imports = append(imports, p1)
 		for _, dep := range p1.deps {
-			deps[dep.ImportPath] = dep
+			// The same import path could produce an error or not,
+			// depending on what tries to import it.
+			// Prefer to record entries with errors, so we can report them.
+			if deps[dep.ImportPath] == nil || dep.Error != nil {
+				deps[dep.ImportPath] = dep
+			}
 		}
 		if p1.Incomplete {
 			p.Incomplete = true
@@ -1501,7 +1568,7 @@ func loadPackage(arg string, stk *importStack) *Package {
 		}
 	}
 
-	return loadImport(arg, cwd, nil, stk, nil)
+	return loadImport(arg, cwd, nil, stk, nil, 0)
 }
 
 // packages returns the packages named by the
@@ -1571,6 +1638,23 @@ func packagesForBuild(args []string) []*Package {
 		}
 	}
 	exitIfErrors()
+
+	// Check for duplicate loads of the same package.
+	// That should be impossible, but if it does happen then
+	// we end up trying to build the same package twice,
+	// usually in parallel overwriting the same files,
+	// which doesn't work very well.
+	seen := map[string]bool{}
+	reported := map[string]bool{}
+	for _, pkg := range packageList(pkgs) {
+		if seen[pkg.ImportPath] && !reported[pkg.ImportPath] {
+			reported[pkg.ImportPath] = true
+			errorf("internal error: duplicate loads of %s", pkg.ImportPath)
+		}
+		seen[pkg.ImportPath] = true
+	}
+	exitIfErrors()
+
 	return pkgs
 }
 
@@ -1620,7 +1704,7 @@ func readBuildID(p *Package) (id string, err error) {
 
 	// For commands, read build ID directly from binary.
 	if p.Name == "main" {
-		return readBuildIDFromBinary(p.Target)
+		return ReadBuildIDFromBinary(p.Target)
 	}
 
 	// Otherwise, we expect to have an archive (.a) file,
@@ -1698,7 +1782,7 @@ var (
 	elfPrefix = []byte("\x7fELF")
 )
 
-// readBuildIDFromBinary reads the build ID from a binary.
+// ReadBuildIDFromBinary reads the build ID from a binary.
 //
 // ELF binaries store the build ID in a proper PT_NOTE section.
 //
@@ -1707,15 +1791,15 @@ var (
 // of the text segment, which should appear near the beginning
 // of the file. This is clumsy but fairly portable. Custom locations
 // can be added for other binary types as needed, like we did for ELF.
-func readBuildIDFromBinary(filename string) (id string, err error) {
+func ReadBuildIDFromBinary(filename string) (id string, err error) {
 	if filename == "" {
 		return "", &os.PathError{Op: "parse", Path: filename, Err: errBuildIDUnknown}
 	}
 
-	// Read the first 8 kB of the binary file.
+	// Read the first 16 kB of the binary file.
 	// That should be enough to find the build ID.
 	// In ELF files, the build ID is in the leading headers,
-	// which are typically less than 4 kB, not to mention 8 kB.
+	// which are typically less than 4 kB, not to mention 16 kB.
 	// On other systems, we're trying to read enough that
 	// we get the beginning of the text segment in the read.
 	// The offset where the text segment begins in a hello
@@ -1723,7 +1807,7 @@ func readBuildIDFromBinary(filename string) (id string, err error) {
 	//
 	//	Plan 9: 0x20
 	//	Windows: 0x600
-	//	Mach-O: 0x1000
+	//	Mach-O: 0x2000
 	//
 	f, err := os.Open(filename)
 	if err != nil {
@@ -1731,7 +1815,7 @@ func readBuildIDFromBinary(filename string) (id string, err error) {
 	}
 	defer f.Close()
 
-	data := make([]byte, 8192)
+	data := make([]byte, 16*1024)
 	_, err = io.ReadFull(f, data)
 	if err == io.ErrUnexpectedEOF {
 		err = nil

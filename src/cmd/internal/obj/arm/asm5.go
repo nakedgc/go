@@ -472,8 +472,8 @@ func asmoutnacl(ctxt *obj.Link, origPC int32, p *obj.Prog, o *Optab, out []uint3
 			break
 		}
 
-		if (p.To.Type == obj.TYPE_MEM && p.To.Reg != REG_R13 && p.To.Reg != REG_R9) || // MOVW Rx, X(Ry), y != 13 && y != 9
-			(p.From.Type == obj.TYPE_MEM && p.From.Reg != REG_R13 && p.From.Reg != REG_R9) { // MOVW X(Rx), Ry, x != 13 && x != 9
+		if (p.To.Type == obj.TYPE_MEM && p.To.Reg != REG_R9) || // MOVW Rx, X(Ry), y != 9
+			(p.From.Type == obj.TYPE_MEM && p.From.Reg != REG_R9) { // MOVW X(Rx), Ry, x != 9
 			var a *obj.Addr
 			if p.To.Type == obj.TYPE_MEM {
 				a = &p.To
@@ -862,16 +862,15 @@ func flushpool(ctxt *obj.Link, p *obj.Prog, skip int, force int) bool {
 			ctxt.Elitrl = q
 		}
 
+		// The line number for constant pool entries doesn't really matter.
+		// We set it to the line number of the preceding instruction so that
+		// there are no deltas to encode in the pc-line tables.
+		for q := ctxt.Blitrl; q != nil; q = q.Link {
+			q.Lineno = p.Lineno
+		}
+
 		ctxt.Elitrl.Link = p.Link
 		p.Link = ctxt.Blitrl
-
-		// BUG(minux): how to correctly handle line number for constant pool entries?
-		// for now, we set line number to the last instruction preceding them at least
-		// this won't bloat the .debug_line tables
-		for ctxt.Blitrl != nil {
-			ctxt.Blitrl.Lineno = p.Lineno
-			ctxt.Blitrl = ctxt.Blitrl.Link
-		}
 
 		ctxt.Blitrl = nil /* BUG: should refer back to values until out-of-range */
 		ctxt.Elitrl = nil

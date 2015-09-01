@@ -60,7 +60,7 @@ type ResponseWriter interface {
 	// WriteHeader. Changing the header after a call to
 	// WriteHeader (or Write) has no effect unless the modified
 	// headers were declared as trailers by setting the
-	// "Trailer" header before the call to WriteHeader.
+	// "Trailer" header before the call to WriteHeader (see example).
 	// To suppress implicit response headers, set their value to nil.
 	Header() Header
 
@@ -473,7 +473,7 @@ func (srv *Server) newConn(rwc net.Conn) (c *conn, err error) {
 	if debugServerConnections {
 		c.rwc = newLoggingConn("server", c.rwc)
 	}
-	c.sr = liveSwitchReader{r: c.rwc}
+	c.sr.r = c.rwc
 	c.lr = io.LimitReader(&c.sr, noLimit).(*io.LimitedReader)
 	br := newBufioReader(c.lr)
 	bw := newBufioWriterSize(checkConnErrorWriter{c}, 4<<10)
@@ -554,6 +554,7 @@ type expectContinueReader struct {
 	resp       *response
 	readCloser io.ReadCloser
 	closed     bool
+	sawEOF     bool
 }
 
 func (ecr *expectContinueReader) Read(p []byte) (n int, err error) {
@@ -565,7 +566,11 @@ func (ecr *expectContinueReader) Read(p []byte) (n int, err error) {
 		ecr.resp.conn.buf.WriteString("HTTP/1.1 100 Continue\r\n\r\n")
 		ecr.resp.conn.buf.Flush()
 	}
-	return ecr.readCloser.Read(p)
+	n, err = ecr.readCloser.Read(p)
+	if err == io.EOF {
+		ecr.sawEOF = true
+	}
+	return
 }
 
 func (ecr *expectContinueReader) Close() error {
@@ -846,21 +851,78 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 		w.closeAfterReply = true
 	}
 
+	// If the client wanted a 100-continue but we never sent it to
+	// them (or, more strictly: we never finished reading their
+	// request body), don't reuse this connection because it's now
+	// in an unknown state: we might be sending this response at
+	// the same time the client is now sending its request body
+	// after a timeout.  (Some HTTP clients send Expect:
+	// 100-continue but knowing that some servers don't support
+	// it, the clients set a timer and send the body later anyway)
+	// If we haven't seen EOF, we can't skip over the unread body
+	// because we don't know if the next bytes on the wire will be
+	// the body-following-the-timer or the subsequent request.
+	// See Issue 11549.
+	if ecr, ok := w.req.Body.(*expectContinueReader); ok && !ecr.sawEOF {
+		w.closeAfterReply = true
+	}
+
 	// Per RFC 2616, we should consume the request body before
 	// replying, if the handler hasn't already done so.  But we
 	// don't want to do an unbounded amount of reading here for
 	// DoS reasons, so we only try up to a threshold.
 	if w.req.ContentLength != 0 && !w.closeAfterReply {
-		ecr, isExpecter := w.req.Body.(*expectContinueReader)
-		if !isExpecter || ecr.resp.wroteContinue {
-			n, _ := io.CopyN(ioutil.Discard, w.req.Body, maxPostHandlerReadBytes+1)
-			if n >= maxPostHandlerReadBytes {
-				w.requestTooLarge()
-				delHeader("Connection")
-				setHeader.connection = "close"
-			} else {
-				w.req.Body.Close()
+		var discard, tooBig bool
+
+		switch bdy := w.req.Body.(type) {
+		case *expectContinueReader:
+			if bdy.resp.wroteContinue {
+				discard = true
 			}
+		case *body:
+			bdy.mu.Lock()
+			switch {
+			case bdy.closed:
+				if !bdy.sawEOF {
+					// Body was closed in handler with non-EOF error.
+					w.closeAfterReply = true
+				}
+			case bdy.unreadDataSizeLocked() >= maxPostHandlerReadBytes:
+				tooBig = true
+			default:
+				discard = true
+			}
+			bdy.mu.Unlock()
+		default:
+			discard = true
+		}
+
+		if discard {
+			_, err := io.CopyN(ioutil.Discard, w.req.Body, maxPostHandlerReadBytes+1)
+			switch err {
+			case nil:
+				// There must be even more data left over.
+				tooBig = true
+			case ErrBodyReadAfterClose:
+				// Body was already consumed and closed.
+			case io.EOF:
+				// The remaining body was just consumed, close it.
+				err = w.req.Body.Close()
+				if err != nil {
+					w.closeAfterReply = true
+				}
+			default:
+				// Some other kind of error occured, like a read timeout, or
+				// corrupt chunked encoding. In any case, whatever remains
+				// on the wire must not be parsed as another HTTP request.
+				w.closeAfterReply = true
+			}
+		}
+
+		if tooBig {
+			w.requestTooLarge()
+			delHeader("Connection")
+			setHeader.connection = "close"
 		}
 	}
 
@@ -1123,11 +1185,16 @@ func (w *response) shouldReuseConnection() bool {
 		return false
 	}
 
-	if body, ok := w.req.Body.(*body); ok && body.didEarlyClose() {
+	if w.closedRequestBodyEarly() {
 		return false
 	}
 
 	return true
+}
+
+func (w *response) closedRequestBodyEarly() bool {
+	body, ok := w.req.Body.(*body)
+	return ok && body.didEarlyClose()
 }
 
 func (w *response) Flush() {
@@ -1183,7 +1250,7 @@ var _ closeWriter = (*net.TCPConn)(nil)
 // pause for a bit, hoping the client processes it before any
 // subsequent RST.
 //
-// See http://golang.org/issue/3595
+// See https://golang.org/issue/3595
 func (c *conn) closeWriteAndWait() {
 	c.finalFlush()
 	if tcp, ok := c.rwc.(closeWriter); ok {
@@ -1297,7 +1364,7 @@ func (c *conn) serve() {
 		}
 		w.finishRequest()
 		if !w.shouldReuseConnection() {
-			if w.requestBodyLimitHit {
+			if w.requestBodyLimitHit || w.closedRequestBodyEarly() {
 				c.closeWriteAndWait()
 			}
 			break
@@ -1852,11 +1919,11 @@ func (s *Server) doKeepAlives() bool {
 // By default, keep-alives are always enabled. Only very
 // resource-constrained environments or servers in the process of
 // shutting down should disable them.
-func (s *Server) SetKeepAlivesEnabled(v bool) {
+func (srv *Server) SetKeepAlivesEnabled(v bool) {
 	if v {
-		atomic.StoreInt32(&s.disableKeepAlives, 0)
+		atomic.StoreInt32(&srv.disableKeepAlives, 0)
 	} else {
-		atomic.StoreInt32(&s.disableKeepAlives, 1)
+		atomic.StoreInt32(&srv.disableKeepAlives, 1)
 	}
 }
 
@@ -1948,10 +2015,7 @@ func (srv *Server) ListenAndServeTLS(certFile, keyFile string) error {
 	if addr == "" {
 		addr = ":https"
 	}
-	config := &tls.Config{}
-	if srv.TLSConfig != nil {
-		*config = *srv.TLSConfig
-	}
+	config := cloneTLSConfig(srv.TLSConfig)
 	if config.NextProtos == nil {
 		config.NextProtos = []string{"http/1.1"}
 	}

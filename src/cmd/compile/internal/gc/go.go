@@ -667,6 +667,7 @@ var (
 	nosplit        bool
 	nowritebarrier bool
 	systemstack    bool
+	norace         bool
 )
 
 var debuglive int

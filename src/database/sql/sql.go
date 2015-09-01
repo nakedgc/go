@@ -6,10 +6,10 @@
 // databases.
 //
 // The sql package must be used in conjunction with a database driver.
-// See http://golang.org/s/sqldrivers for a list of drivers.
+// See https://golang.org/s/sqldrivers for a list of drivers.
 //
 // For more usage examples, see the wiki page at
-// http://golang.org/s/sqlwiki.
+// https://golang.org/s/sqlwiki.
 package sql
 
 import (
@@ -23,12 +23,17 @@ import (
 	"sync/atomic"
 )
 
-var drivers = make(map[string]driver.Driver)
+var (
+	driversMu sync.Mutex
+	drivers   = make(map[string]driver.Driver)
+)
 
 // Register makes a database driver available by the provided name.
 // If Register is called twice with the same name or if driver is nil,
 // it panics.
 func Register(name string, driver driver.Driver) {
+	driversMu.Lock()
+	defer driversMu.Unlock()
 	if driver == nil {
 		panic("sql: Register driver is nil")
 	}
@@ -39,12 +44,16 @@ func Register(name string, driver driver.Driver) {
 }
 
 func unregisterAllDrivers() {
+	driversMu.Lock()
+	defer driversMu.Unlock()
 	// For tests.
 	drivers = make(map[string]driver.Driver)
 }
 
 // Drivers returns a sorted list of the names of the registered drivers.
 func Drivers() []string {
+	driversMu.Lock()
+	defer driversMu.Unlock()
 	var list []string
 	for name := range drivers {
 		list = append(list, name)
@@ -445,7 +454,7 @@ var connectionRequestQueueSize = 1000000
 //
 // Most users will open a database via a driver-specific connection
 // helper function that returns a *DB. No database drivers are included
-// in the Go standard library. See http://golang.org/s/sqldrivers for
+// in the Go standard library. See https://golang.org/s/sqldrivers for
 // a list of third-party drivers.
 //
 // Open may just validate its arguments without creating a connection
@@ -457,7 +466,9 @@ var connectionRequestQueueSize = 1000000
 // function should be called just once. It is rarely necessary to
 // close a DB.
 func Open(driverName, dataSourceName string) (*DB, error) {
+	driversMu.Lock()
 	driveri, ok := drivers[driverName]
+	driversMu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("sql: unknown driver %q (forgotten import?)", driverName)
 	}
@@ -829,6 +840,8 @@ const maxBadConnRetries = 2
 // Prepare creates a prepared statement for later queries or executions.
 // Multiple queries or executions may be run concurrently from the
 // returned statement.
+// The caller must call the statement's Close method
+// when the statement is no longer needed.
 func (db *DB) Prepare(query string) (*Stmt, error) {
 	var stmt *Stmt
 	var err error
@@ -1063,6 +1076,10 @@ func (db *DB) Driver() driver.Driver {
 //
 // After a call to Commit or Rollback, all operations on the
 // transaction fail with ErrTxDone.
+//
+// The statements prepared for a transaction by calling
+// the transaction's Prepare or Stmt methods are closed
+// by the call to Commit or Rollback.
 type Tx struct {
 	db *DB
 
@@ -1198,6 +1215,9 @@ func (tx *Tx) Prepare(query string) (*Stmt, error) {
 //  tx, err := db.Begin()
 //  ...
 //  res, err := tx.Stmt(updateMoney).Exec(123.45, 98293203)
+//
+// The returned statement operates within the transaction and can no longer
+// be used once the transaction has been committed or rolled back.
 func (tx *Tx) Stmt(stmt *Stmt) *Stmt {
 	// TODO(bradfitz): optimize this. Currently this re-prepares
 	// each time.  This is fine for now to illustrate the API but
@@ -1289,7 +1309,8 @@ type connStmt struct {
 	si driver.Stmt
 }
 
-// Stmt is a prepared statement. Stmt is safe for concurrent use by multiple goroutines.
+// Stmt is a prepared statement.
+// A Stmt is safe for concurrent use by multiple goroutines.
 type Stmt struct {
 	// Immutable:
 	db        *DB    // where we came from

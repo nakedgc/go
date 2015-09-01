@@ -128,8 +128,28 @@ func breakpoint()
 func reflectcall(argtype *_type, fn, arg unsafe.Pointer, argsize uint32, retoffset uint32)
 
 func procyield(cycles uint32)
-func cgocallback_gofunc(fv *funcval, frame unsafe.Pointer, framesize uintptr)
-func goexit()
+
+type neverCallThisFunction struct{}
+
+// goexit is the return stub at the top of every goroutine call stack.
+// Each goroutine stack is constructed as if goexit called the
+// goroutine's entry point function, so that when the entry point
+// function returns, it will return to goexit, which will call goexit1
+// to perform the actual exit.
+//
+// This function must never be called directly. Call goexit1 instead.
+// gentraceback assumes that goexit terminates the stack. A direct
+// call on the stack will cause gentraceback to stop walking the stack
+// prematurely and if there are leftover stack barriers it may panic.
+func goexit(neverCallThisFunction)
+
+// Not all cgocallback_gofunc frames are actually cgocallback_gofunc,
+// so not all have these arguments. Mark them uintptr so that the GC
+// does not misinterpret memory when the arguments are not present.
+// cgocallback_gofunc is not called from go, only from cgocallback,
+// so the arguments will be found via cgocallback's pointer-declared arguments.
+// See the assembly implementations for more details.
+func cgocallback_gofunc(fv uintptr, frame uintptr, framesize uintptr)
 
 //go:noescape
 func cas(ptr *uint32, old, new uint32) bool
@@ -249,7 +269,6 @@ func time_now() (sec int64, nsec int32)
 
 // in asm_*.s
 // not called directly; definitions here supply type information for traceback.
-func call16(fn, arg unsafe.Pointer, n, retoffset uint32)
 func call32(fn, arg unsafe.Pointer, n, retoffset uint32)
 func call64(fn, arg unsafe.Pointer, n, retoffset uint32)
 func call128(fn, arg unsafe.Pointer, n, retoffset uint32)

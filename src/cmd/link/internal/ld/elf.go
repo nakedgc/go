@@ -713,7 +713,7 @@ var Elfstrdat []byte
  * On FreeBSD, cannot be larger than a page.
  */
 const (
-	ELFRESERVE = 3072
+	ELFRESERVE = 4096
 )
 
 /*
@@ -1668,7 +1668,7 @@ func doelf() {
 	// generate .tbss section (except for OpenBSD where it's not supported)
 	// for dynamic internal linker or external linking, so that various
 	// binutils could correctly calculate PT_TLS size.
-	// see http://golang.org/issue/5200.
+	// see https://golang.org/issue/5200.
 	if HEADTYPE != obj.Hopenbsd {
 		if Debug['d'] == 0 || Linkmode == LinkExternal {
 			Addstring(shstrtab, ".tbss")
@@ -1693,8 +1693,6 @@ func doelf() {
 	Addstring(shstrtab, ".gopclntab")
 
 	if Linkmode == LinkExternal {
-		debug_s = Debug['s']
-		Debug['s'] = 0
 		Debug['d'] = 1
 
 		switch Thearch.Thechar {

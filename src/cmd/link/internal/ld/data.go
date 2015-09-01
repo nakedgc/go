@@ -487,7 +487,7 @@ func relocsym(s *LSym) {
 
 			// On amd64, 4-byte offsets will be sign-extended, so it is impossible to
 			// access more than 2GB of static data; fail at link time is better than
-			// fail at runtime. See http://golang.org/issue/7980.
+			// fail at runtime. See https://golang.org/issue/7980.
 			// Instead of special casing only amd64, we treat this as an error on all
 			// 64-bit architectures so as to be future-proof.
 			if int32(o) < 0 && Thearch.Ptrsize > 4 && siz == 4 {
@@ -778,7 +778,6 @@ func Codeblk(addr int64, size int64) {
 	}
 
 	eaddr := addr + size
-	var n int64
 	var q []byte
 	for ; sym != nil; sym = sym.Next {
 		if !sym.Reachable {
@@ -797,20 +796,18 @@ func Codeblk(addr int64, size int64) {
 		}
 
 		fmt.Fprintf(&Bso, "%.6x\t%-20s\n", uint64(int64(addr)), sym.Name)
-		n = sym.Size
 		q = sym.P
 
-		for n >= 16 {
-			fmt.Fprintf(&Bso, "%.6x\t%-20.16I\n", uint64(addr), q)
+		for len(q) >= 16 {
+			fmt.Fprintf(&Bso, "%.6x\t% x\n", uint64(addr), q[:16])
 			addr += 16
 			q = q[16:]
-			n -= 16
 		}
 
-		if n > 0 {
-			fmt.Fprintf(&Bso, "%.6x\t%-20.*I\n", uint64(addr), int(n), q)
+		if len(q) > 0 {
+			fmt.Fprintf(&Bso, "%.6x\t% x\n", uint64(addr), q)
+			addr += int64(len(q))
 		}
-		addr += n
 	}
 
 	if addr < eaddr {
@@ -917,6 +914,8 @@ func strnput(s string, n int) {
 	}
 }
 
+var strdata []*LSym
+
 func addstrdata1(arg string) {
 	i := strings.Index(arg, "=")
 	if i < 0 {
@@ -944,7 +943,19 @@ func addstrdata(name string, value string) {
 	// we know before entering this function.
 	s.Reachable = reachable
 
+	strdata = append(strdata, s)
+
 	sp.Reachable = reachable
+}
+
+func checkstrdata() {
+	for _, s := range strdata {
+		if s.Type == obj.STEXT {
+			Diag("cannot use -X with text symbol %s", s.Name)
+		} else if s.Gotype != nil && s.Gotype.Name != "type.string" {
+			Diag("cannot use -X with non-string symbol %s", s.Name)
+		}
+	}
 }
 
 func Addstring(s *LSym, str string) int64 {
@@ -1108,11 +1119,14 @@ func (p *GCProg) AddSym(s *LSym) {
 
 func growdatsize(datsizep *int64, s *LSym) {
 	datsize := *datsizep
-	if s.Size < 0 {
-		Diag("negative size (datsize = %d, s->size = %d)", datsize, s.Size)
-	}
-	if datsize+s.Size < datsize {
-		Diag("symbol too large (datsize = %d, s->size = %d)", datsize, s.Size)
+	const cutoff int64 = 2e9 // 2 GB (or so; looks better in errors than 2^31)
+	switch {
+	case s.Size < 0:
+		Diag("%s: negative size (%d bytes)", s.Name, s.Size)
+	case s.Size > cutoff:
+		Diag("%s: symbol too large (%d bytes)", s.Name, s.Size)
+	case datsize <= cutoff && datsize+s.Size > cutoff:
+		Diag("%s: too much data (over %d bytes)", s.Name, cutoff)
 	}
 	*datsizep = datsize + s.Size
 }

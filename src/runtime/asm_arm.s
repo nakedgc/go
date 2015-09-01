@@ -215,6 +215,9 @@ switch:
 	// save our state in g->sched.  Pretend to
 	// be systemstack_switch if the G stack is scanned.
 	MOVW	$runtime·systemstack_switch(SB), R3
+#ifdef GOOS_nacl
+	ADD	$4, R3, R3 // get past nacl-insert bic instruction
+#endif
 	ADD	$4, R3, R3 // get past push {lr}
 	MOVW	R3, (g_sched+gobuf_pc)(g)
 	MOVW	R13, (g_sched+gobuf_sp)(g)
@@ -713,10 +716,22 @@ casl:
 	LDREX	(R1), R0
 	CMP	R0, R2
 	BNE	casfail
+
+	MOVB	runtime·goarm(SB), R11
+	CMP	$7, R11
+	BLT	2(PC)
+	WORD	$0xf57ff05a	// dmb ishst
+
 	STREX	R3, (R1), R0
 	CMP	$0, R0
 	BNE	casl
 	MOVW	$1, R0
+
+	MOVB	runtime·goarm(SB), R11
+	CMP	$7, R11
+	BLT	2(PC)
+	WORD	$0xf57ff05b	// dmb ish
+
 	MOVB	R0, ret+12(FP)
 	RET
 casfail:
@@ -737,6 +752,8 @@ TEXT runtime·atomicstoreuintptr(SB),NOSPLIT,$0-8
 	B	runtime·atomicstore(SB)
 
 // armPublicationBarrier is a native store/store barrier for ARMv7+.
+// On earlier ARM revisions, armPublicationBarrier is a no-op.
+// This will not work on SMP ARMv6 machines, if any are in use.
 // To implement publiationBarrier in sys_$GOOS_arm.s using the native
 // instructions, use:
 //
@@ -744,6 +761,9 @@ TEXT runtime·atomicstoreuintptr(SB),NOSPLIT,$0-8
 //		B	runtime·armPublicationBarrier(SB)
 //
 TEXT runtime·armPublicationBarrier(SB),NOSPLIT,$-4-0
+	MOVB	runtime·goarm(SB), R11
+	CMP	$7, R11
+	BLT	2(PC)
 	WORD $0xf57ff05e	// DMB ST
 	RET
 
@@ -1028,4 +1048,25 @@ TEXT runtime·prefetcht2(SB),NOSPLIT,$0-4
 	RET
 
 TEXT runtime·prefetchnta(SB),NOSPLIT,$0-4
+	RET
+
+// x -> x/1000000, x%1000000, called from Go with args, results on stack.
+TEXT runtime·usplit(SB),NOSPLIT,$0-12
+	MOVW	x+0(FP), R0
+	CALL	runtime·usplitR0(SB)
+	MOVW	R0, q+4(FP)
+	MOVW	R1, r+8(FP)
+	RET
+
+// R0, R1 = R0/1000000, R0%1000000
+TEXT runtime·usplitR0(SB),NOSPLIT,$0
+	// magic multiply to avoid software divide without available m.
+	// see output of go tool compile -S for x/1000000.
+	MOVW	R0, R3
+	MOVW	$1125899907, R1
+	MULLU	R1, R0, (R0, R1)
+	MOVW	R0>>18, R0
+	MOVW	$1000000, R1
+	MULU	R0, R1
+	SUB	R1, R3, R1
 	RET

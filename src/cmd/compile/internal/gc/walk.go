@@ -611,8 +611,8 @@ func walkexpr(np **Node, init **NodeList) {
 			// Transform direct call of a closure to call of a normal function.
 			// transformclosure already did all preparation work.
 
-			// Append captured variables to argument list.
-			n.List = concat(n.List, n.Left.Func.Enter)
+			// Prepend captured variables to argument list.
+			n.List = concat(n.Left.Func.Enter, n.List)
 
 			n.Left.Func.Enter = nil
 
@@ -2129,6 +2129,11 @@ func callnew(t *Type) *Node {
 	return mkcall1(fn, Ptrto(t), nil, typename(t))
 }
 
+func iscallret(n *Node) bool {
+	n = outervalue(n)
+	return n.Op == OINDREG && n.Reg == int16(Thearch.REGSP)
+}
+
 func isstack(n *Node) bool {
 	n = outervalue(n)
 
@@ -2191,13 +2196,20 @@ func needwritebarrier(l *Node, r *Node) bool {
 		return false
 	}
 
-	// No write barrier for implicit or explicit zeroing.
-	if r == nil || iszero(r) {
+	// No write barrier for implicit zeroing.
+	if r == nil {
 		return false
 	}
 
-	// No write barrier for initialization to constant.
-	if r.Op == OLITERAL {
+	// Ignore no-op conversions when making decision.
+	// Ensures that xp = unsafe.Pointer(&x) is treated
+	// the same as xp = &x.
+	for r.Op == OCONVNOP {
+		r = r.Left
+	}
+
+	// No write barrier for zeroing or initialization to constant.
+	if iszero(r) || r.Op == OLITERAL {
 		return false
 	}
 
@@ -3863,7 +3875,7 @@ func usefield(n *Node) {
 	if Isptr[t.Etype] {
 		t = t.Type
 	}
-	field := dotField[typeSym{t, n.Right.Sym}]
+	field := dotField[typeSym{t.Orig, n.Right.Sym}]
 	if field == nil {
 		Fatal("usefield %v %v without paramfld", n.Left.Type, n.Right.Sym)
 	}

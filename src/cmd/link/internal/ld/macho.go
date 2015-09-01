@@ -444,8 +444,12 @@ func Asmbmacho() {
 		ms = newMachoSeg("", 40)
 
 		ms.fileoffset = Segtext.Fileoff
-		ms.filesize = Segdwarf.Fileoff + Segdwarf.Filelen - Segtext.Fileoff
-		ms.vsize = ms.filesize
+		if Thearch.Thechar == '5' {
+			ms.filesize = Segdata.Fileoff + Segdata.Filelen - Segtext.Fileoff
+		} else {
+			ms.filesize = Segdwarf.Fileoff + Segdwarf.Filelen - Segtext.Fileoff
+			ms.vsize = ms.filesize
+		}
 	}
 
 	/* segment for zero page */
@@ -641,7 +645,7 @@ func machogenasmsym(put func(*LSym, string, int, int64, int64, int, *LSym)) {
 func machosymorder() {
 	// On Mac OS X Mountain Lion, we must sort exported symbols
 	// So we sort them here and pre-allocate dynid for them
-	// See http://golang.org/issue/4029
+	// See https://golang.org/issue/4029
 	for i := 0; i < len(dynexp); i++ {
 		dynexp[i].Reachable = true
 	}

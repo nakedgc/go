@@ -1588,7 +1588,7 @@ func getlinepragma() int {
 		}
 		cp = nil
 
-		text := lexbuf.String()
+		text := strings.TrimSuffix(lexbuf.String(), "\r")
 
 		if strings.HasPrefix(text, "go:cgo_") {
 			pragcgo(text)
@@ -1621,6 +1621,11 @@ func getlinepragma() int {
 
 		if verb == "go:noescape" {
 			noescape = true
+			return c
+		}
+
+		if verb == "go:norace" {
+			norace = true
 			return c
 		}
 
@@ -1678,7 +1683,7 @@ func getlinepragma() int {
 	if linep == 0 {
 		return c
 	}
-	text := lexbuf.String()
+	text := strings.TrimSuffix(lexbuf.String(), "\r")
 	n := 0
 	for _, c := range text[linep:] {
 		if c < '0' || c > '9' {

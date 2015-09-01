@@ -29,6 +29,7 @@ type mheap struct {
 	spans_mapped uintptr
 
 	// Proportional sweep
+	spanBytesAlloc    uint64  // bytes of spans allocated this cycle; updated atomically
 	pagesSwept        uint64  // pages swept this cycle; updated atomically
 	sweepPagesPerByte float64 // proportional sweep ratio; written with lock, read without
 
@@ -75,6 +76,20 @@ var mheap_ mheap
 // either one of the MHeap's free lists or one of the
 // MCentral's span lists.  We use empty MSpan structures as list heads.
 
+// An MSpan representing actual memory has state _MSpanInUse,
+// _MSpanStack, or _MSpanFree. Transitions between these states are
+// constrained as follows:
+//
+// * A span may transition from free to in-use or stack during any GC
+//   phase.
+//
+// * During sweeping (gcphase == _GCoff), a span may transition from
+//   in-use to free (as a result of sweeping) or stack to free (as a
+//   result of stacks being freed).
+//
+// * During GC (gcphase != _GCoff), a span *must not* transition from
+//   stack or in-use to free. Because concurrent GC may read a pointer
+//   and then look up its span, the span state must be monotonic.
 const (
 	_MSpanInUse = iota // allocated for garbage collected heap
 	_MSpanStack        // allocated for use by stack allocator
@@ -405,6 +420,8 @@ func mHeap_Alloc_m(h *mheap, npage uintptr, sizeclass int32, large bool) *mspan 
 	memstats.tinyallocs += uint64(_g_.m.mcache.local_tinyallocs)
 	_g_.m.mcache.local_tinyallocs = 0
 
+	gcController.revise()
+
 	s := mHeap_AllocSpanLocked(h, npage)
 	if s != nil {
 		// Record span info, because gc needs to be
@@ -679,6 +696,7 @@ func mHeap_Free(h *mheap, s *mspan, acct int32) {
 		if acct != 0 {
 			memstats.heap_objects--
 		}
+		gcController.revise()
 		mHeap_FreeSpanLocked(h, s, true, true, 0)
 		if trace.enabled {
 			traceHeapAlloc()
@@ -818,7 +836,7 @@ func mHeap_Scavenge(k int32, now, limit uint64) {
 
 //go:linkname runtime_debug_freeOSMemory runtime/debug.freeOSMemory
 func runtime_debug_freeOSMemory() {
-	startGC(gcForceBlockMode)
+	startGC(gcForceBlockMode, false)
 	systemstack(func() { mHeap_Scavenge(-1, ^uint64(0), 0) })
 }
 

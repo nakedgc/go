@@ -35,21 +35,23 @@ var cmdBuild = &Command{
 Build compiles the packages named by the import paths,
 along with their dependencies, but it does not install the results.
 
-If the arguments are a list of .go files, build treats them as a list
-of source files specifying a single package.
+If the arguments to build are a list of .go files, build treats
+them as a list of source files specifying a single package.
 
-When the command line specifies a single main package,
-build writes the resulting executable to output.
-Otherwise build compiles the packages but discards the results,
+When compiling a single main package, build writes
+the resulting executable to an output file named after
+the first source file ('go build ed.go rx.go' writes 'ed' or 'ed.exe')
+or the source code directory ('go build unix/sam' writes 'sam' or 'sam.exe').
+The '.exe' suffix is added when writing a Windows executable.
+
+When compiling multiple packages or a single non-main package,
+build compiles the packages but discards the resulting object,
 serving only as a check that the packages can be built.
 
-The -o flag specifies the output file name. If not specified, the
-output file name depends on the arguments and derives from the name
-of the package, such as p.a for package p, unless p is 'main'. If
-the package is main and file names are provided, the file name
-derives from the first file name mentioned, such as f1 for 'go build
-f1.go f2.go'; with no files provided ('go build'), the output file
-name is the base name of the containing directory.
+The -o flag, only allowed when compiling a single package,
+forces build to write the resulting executable or object
+to the named output file, instead of the default behavior described
+in the last two paragraphs.
 
 The -i flag installs the packages that are dependencies of the target.
 
@@ -79,11 +81,10 @@ and test commands:
 	-x
 		print the commands.
 
+	-asmflags 'flag list'
+		arguments to pass on each go tool asm invocation.
 	-buildmode mode
 		build mode to use. See 'go help buildmode' for more.
-	-linkshared
-		link against shared libraries previously created with
-		-buildmode=shared
 	-compiler name
 		name of compiler to use, as in runtime.Compiler (gccgo or gc).
 	-gccgoflags 'arg list'
@@ -98,24 +99,36 @@ and test commands:
 		option that requires non-default compile flags has a similar effect.
 	-ldflags 'flag list'
 		arguments to pass on each go tool link invocation.
-	-asmflags 'flag list'
-		arguments to pass on each go tool asm invocation.
+	-linkshared
+		link against shared libraries previously created with
+		-buildmode=shared
+	-pkgdir dir
+		install and load all packages from dir instead of the usual locations.
+		For example, when building with a non-standard configuration,
+		use -pkgdir to keep generated packages in a separate location.
 	-tags 'tag list'
 		a list of build tags to consider satisfied during the build.
 		For more information about build tags, see the description of
 		build constraints in the documentation for the go/build package.
 	-toolexec 'cmd args'
-		a program to use to invoke toolchain programs like 5a, 5g, and 5l.
-		For example, instead of running 5g, the go command will run
-		'cmd args /path/to/5g <arguments for 5g>'.
+		a program to use to invoke toolchain programs like vet and asm.
+		For example, instead of running asm, the go command will run
+		'cmd args /path/to/asm <arguments for asm>'.
 
 The list flags accept a space-separated list of strings. To embed spaces
 in an element in the list, surround it with either single or double quotes.
 
 For more about specifying packages, see 'go help packages'.
 For more about where packages and binaries are installed,
-run 'go help gopath'.  For more about calling between Go and C/C++,
-run 'go help c'.
+run 'go help gopath'.
+For more about calling between Go and C/C++, run 'go help c'.
+
+Note: Build adheres to certain conventions such as those described
+by 'go help gopath'. Not all projects can follow these conventions,
+however. Installations that have their own conventions or that use
+a separate software build system may choose to use lower-level
+invocations such as 'go tool compile' and 'go tool link' to avoid
+some of the overheads and design decisions of the build tool.
 
 See also: go install, go get, go clean.
 	`,
@@ -160,8 +173,11 @@ var buildRace bool           // -race flag
 var buildToolExec []string   // -toolexec flag
 var buildBuildmode string    // -buildmode flag
 var buildLinkshared bool     // -linkshared flag
+
 // NakedGC
 var buildNonFatalWarnings bool // -Wno-error
+
+var buildPkgdir string       // -pkgdir flag
 
 var buildContext = build.Default
 var buildToolchain toolchain = noToolchain{}
@@ -201,27 +217,31 @@ func init() {
 // addBuildFlags adds the flags common to the build, clean, get,
 // install, list, run, and test commands.
 func addBuildFlags(cmd *Command) {
-	// NOTE: If you add flags here, also add them to testflag.go.
 	cmd.Flag.BoolVar(&buildA, "a", false, "")
 	cmd.Flag.BoolVar(&buildN, "n", false, "")
 	cmd.Flag.IntVar(&buildP, "p", buildP, "")
-	cmd.Flag.StringVar(&buildContext.InstallSuffix, "installsuffix", "", "")
 	cmd.Flag.BoolVar(&buildV, "v", false, "")
 	cmd.Flag.BoolVar(&buildX, "x", false, "")
-	cmd.Flag.BoolVar(&buildWork, "work", false, "")
+
 	cmd.Flag.Var((*stringsFlag)(&buildAsmflags), "asmflags", "")
-	cmd.Flag.Var((*stringsFlag)(&buildGcflags), "gcflags", "")
-	cmd.Flag.Var((*stringsFlag)(&buildLdflags), "ldflags", "")
-	cmd.Flag.Var((*stringsFlag)(&buildGccgoflags), "gccgoflags", "")
-	cmd.Flag.Var((*stringsFlag)(&buildContext.BuildTags), "tags", "")
 	cmd.Flag.Var(buildCompiler{}, "compiler", "")
+	cmd.Flag.StringVar(&buildBuildmode, "buildmode", "default", "")
+	cmd.Flag.Var((*stringsFlag)(&buildGcflags), "gcflags", "")
+	cmd.Flag.Var((*stringsFlag)(&buildGccgoflags), "gccgoflags", "")
+	cmd.Flag.StringVar(&buildContext.InstallSuffix, "installsuffix", "", "")
+	cmd.Flag.Var((*stringsFlag)(&buildLdflags), "ldflags", "")
+	cmd.Flag.BoolVar(&buildLinkshared, "linkshared", false, "")
+	cmd.Flag.StringVar(&buildPkgdir, "pkgdir", "", "")
 	cmd.Flag.BoolVar(&buildRace, "race", false, "")
+	cmd.Flag.Var((*stringsFlag)(&buildContext.BuildTags), "tags", "")
 	cmd.Flag.Var((*stringsFlag)(&buildToolExec), "toolexec", "")
 	cmd.Flag.StringVar(&buildBuildmode, "buildmode", "default", "")
 	cmd.Flag.BoolVar(&buildLinkshared, "linkshared", false, "")
 	
 	// NakedGC
 	cmd.Flag.BoolVar(&buildNonFatalWarnings, "Wno-error", false, "")
+	
+	cmd.Flag.BoolVar(&buildWork, "work", false, "")
 }
 
 func addBuildFlagsNX(cmd *Command) {
@@ -446,14 +466,9 @@ func runBuild(cmd *Command, args []string) {
 			fatalf("no packages to build")
 		}
 		p := pkgs[0]
-		p.target = "" // must build - not up to date
+		p.target = *buildO
+		p.Stale = true // must build - not up to date
 		a := b.action(modeInstall, depMode, p)
-		a.target = *buildO
-		if p.local {
-			// If p.local, then b.action did not really install,
-			// so install the header file now if necessary.
-			a = b.maybeAddHeaderAction(a, false)
-		}
 		b.do(a)
 		return
 	}
@@ -515,11 +530,14 @@ func runInstall(cmd *Command, args []string) {
 
 	for _, p := range pkgs {
 		if p.Target == "" && (!p.Standard || p.ImportPath != "unsafe") {
-			if p.cmdline {
+			switch {
+			case p.gobinSubdir:
+				errorf("go install: cannot install cross-compiled binaries when GOBIN is set")
+			case p.cmdline:
 				errorf("go install: no install location for .go files listed on command line (GOBIN not set)")
-			} else if p.ConflictDir != "" {
+			case p.ConflictDir != "":
 				errorf("go install: no install location for %s: hidden by %s", p.Dir, p.ConflictDir)
-			} else {
+			default:
 				errorf("go install: no install location for directory %s outside GOPATH\n"+
 					"\tFor more details see: go help gopath", p.Dir)
 			}
@@ -573,12 +591,14 @@ func runInstall(cmd *Command, args []string) {
 		// If it exists and is an executable file, remove it.
 		_, targ := filepath.Split(pkgs[0].ImportPath)
 		targ += exeSuffix
-		fi, err := os.Stat(targ)
-		if err == nil {
-			m := fi.Mode()
-			if m.IsRegular() {
-				if m&0111 != 0 || goos == "windows" { // windows never sets executable bit
-					os.Remove(targ)
+		if filepath.Join(pkgs[0].Dir, targ) != pkgs[0].Target { // maybe $GOBIN is the current directory
+			fi, err := os.Stat(targ)
+			if err == nil {
+				m := fi.Mode()
+				if m.IsRegular() {
+					if m&0111 != 0 || goos == "windows" { // windows never sets executable bit
+						os.Remove(targ)
+					}
 				}
 			}
 		}
@@ -721,6 +741,9 @@ func goFilesPackage(gofiles []string) *Package {
 			fatalf("%s is a directory, should be a Go file", file)
 		}
 		dir1, _ := filepath.Split(file)
+		if dir1 == "" {
+			dir1 = "./"
+		}
 		if dir == "" {
 			dir = dir1
 		} else if dir != dir1 {
@@ -757,11 +780,8 @@ func goFilesPackage(gofiles []string) *Package {
 		if gobin != "" {
 			pkg.target = filepath.Join(gobin, exe)
 		}
-	} else {
-		if *buildO == "" {
-			*buildO = pkg.Name + ".a"
-		}
 	}
+
 	pkg.Target = pkg.target
 	pkg.Stale = true
 
@@ -908,7 +928,19 @@ func (b *builder) action1(mode buildMode, depMode buildMode, p *Package, looksha
 		a.f = (*builder).install
 		a.deps = []*action{b.action1(modeBuild, depMode, p, lookshared)}
 		a.target = a.p.target
-		a = b.maybeAddHeaderAction(a, true)
+
+		// Install header for cgo in c-archive and c-shared modes.
+		if p.usesCgo() && (buildBuildmode == "c-archive" || buildBuildmode == "c-shared") {
+			ah := &action{
+				p:      a.p,
+				deps:   []*action{a.deps[0]},
+				f:      (*builder).installHeader,
+				pkgdir: a.pkgdir,
+				objdir: a.objdir,
+				target: a.target[:len(a.target)-len(filepath.Ext(a.target))] + ".h",
+			}
+			a.deps = append(a.deps, ah)
+		}
 
 	case modeBuild:
 		a.f = (*builder).build
@@ -924,6 +956,13 @@ func (b *builder) action1(mode buildMode, depMode buildMode, p *Package, looksha
 			name := "a.out"
 			if p.exeName != "" {
 				name = p.exeName
+			} else if goos == "darwin" && buildBuildmode == "c-shared" && p.target != "" {
+				// On OS X, the linker output name gets recorded in the
+				// shared library's LC_ID_DYLIB load command.
+				// The code invoking the linker knows to pass only the final
+				// path element. Arrange that the path element matches what
+				// we'll install it as; otherwise the library is only loadable as "a.out".
+				_, name = filepath.Split(p.target)
 			}
 			a.target = a.objdir + filepath.Join("exe", name) + exeSuffix
 		}
@@ -1024,49 +1063,6 @@ func (b *builder) libaction(libname string, pkgs []*Package, mode, depMode build
 		fatalf("unregonized mode %v", mode)
 	}
 	return a
-}
-
-// In c-archive/c-shared mode, if the package for the action uses cgo,
-// add a dependency to install the generated export header file, if
-// there is one.
-// The isInstall parameter is whether a is an install action.
-func (b *builder) maybeAddHeaderAction(a *action, isInstall bool) *action {
-	switch buildBuildmode {
-	case "c-archive", "c-shared":
-	default:
-		return a
-	}
-	if !a.p.usesCgo() {
-		return a
-	}
-
-	if isInstall {
-		// For an install action, change the action function.
-		// We can't add an action after the install action,
-		// because it deletes the working directory.
-		// Adding an action before the install action is painful,
-		// because it uses deps[0] to find the source.
-		a.f = (*builder).installWithHeader
-		return a
-	}
-
-	return &action{
-		p:      a.p,
-		deps:   []*action{a},
-		f:      (*builder).installHeader,
-		pkgdir: a.pkgdir,
-		objdir: a.objdir,
-		target: a.target[:len(a.target)-len(filepath.Ext(a.target))] + ".h",
-	}
-}
-
-// Install the library and the cgo export header if there is one.
-func (b *builder) installWithHeader(a *action) error {
-	target := a.target[:len(a.target)-len(filepath.Ext(a.target))] + ".h"
-	if err := b.doInstallHeader(a, a.objdir, target); err != nil {
-		return err
-	}
-	return b.install(a)
 }
 
 // actionList returns the list of actions in the dag rooted at root
@@ -1445,7 +1441,7 @@ func (b *builder) build(a *action) (err error) {
 	// NOTE(rsc): On Windows, it is critically important that the
 	// gcc-compiled objects (cgoObjects) be listed after the ordinary
 	// objects in the archive.  I do not know why this is.
-	// http://golang.org/issue/2601
+	// https://golang.org/issue/2601
 	objects = append(objects, cgoObjects...)
 
 	// Add system object files.
@@ -1684,25 +1680,21 @@ func (b *builder) copyFile(a *action, dst, src string, perm os.FileMode, force b
 
 // Install the cgo export header file, if there is one.
 func (b *builder) installHeader(a *action) error {
-	return b.doInstallHeader(a, a.objdir, a.target)
-}
-
-func (b *builder) doInstallHeader(a *action, objdir, target string) error {
-	src := objdir + "_cgo_install.h"
+	src := a.objdir + "_cgo_install.h"
 	if _, err := os.Stat(src); os.IsNotExist(err) {
 		// If the file does not exist, there are no exported
 		// functions, and we do not install anything.
 		return nil
 	}
 
-	dir, _ := filepath.Split(target)
+	dir, _ := filepath.Split(a.target)
 	if dir != "" {
 		if err := b.mkdir(dir); err != nil {
 			return err
 		}
 	}
 
-	return b.moveOrCopyFile(a, target, src, 0644, true)
+	return b.moveOrCopyFile(a, a.target, src, 0644, true)
 }
 
 // cover runs, in effect,
@@ -1907,7 +1899,7 @@ func (b *builder) runOut(dir string, desc string, env []string, cmdargs ...inter
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
 		cmd.Dir = dir
-		cmd.Env = mergeEnvLists(env, envForDir(cmd.Dir))
+		cmd.Env = mergeEnvLists(env, envForDir(cmd.Dir, os.Environ()))
 		err := cmd.Run()
 
 		// cmd.Run will fail on Unix if some other process has the binary
@@ -1949,7 +1941,7 @@ func (b *builder) runOut(dir string, desc string, env []string, cmdargs ...inter
 		// Sleeping when we observe the race seems to be the most reliable
 		// option we have.
 		//
-		// http://golang.org/issue/3001
+		// https://golang.org/issue/3001
 		//
 		if err != nil && nbusy < 3 && strings.Contains(err.Error(), "text file busy") {
 			time.Sleep(100 * time.Millisecond << uint(nbusy))
@@ -2173,11 +2165,6 @@ func (gcToolchain) gc(b *builder, p *Package, archive, obj string, asmhdr bool, 
 	return ofile, output, err
 }
 
-// verifyAsm specifies whether to check the assemblers written in Go
-// against the assemblers written in C. If set, asm will run both asm and (say) 6a
-// and fail if the two produce different output files.
-const verifyAsm = true
-
 func (gcToolchain) asm(b *builder, p *Package, obj, ofile, sfile string) error {
 	// Add -I pkg/GOOS_GOARCH so #include "textflag.h" works in .s files.
 	inc := filepath.Join(goroot, "pkg", "include")
@@ -2186,31 +2173,12 @@ func (gcToolchain) asm(b *builder, p *Package, obj, ofile, sfile string) error {
 	if err := b.run(p.Dir, p.ImportPath, nil, args...); err != nil {
 		return err
 	}
-	// Disable checks when additional flags are passed, as the old assemblers
-	// don't implement some of them (e.g., -shared).
-	if verifyAsm && len(buildAsmflags) == 0 {
-		old := ""
-		switch goarch {
-		case "arm":
-			old = "old5a"
-		case "amd64", "amd64p32":
-			old = "old6a"
-		case "386":
-			old = "old8a"
-		case "ppc64", "ppc64le":
-			old = "old9a"
-		}
-		if old != "" {
-			if err := toolVerify(b, p, old, ofile, args); err != nil {
-				return err
-			}
-		}
-	}
 	return nil
 }
 
 // toolVerify checks that the command line args writes the same output file
 // if run using newTool instead.
+// Unused now but kept around for future use.
 func toolVerify(b *builder, p *Package, newTool string, ofile string, args []interface{}) error {
 	newArgs := make([]interface{}, len(args))
 	copy(newArgs, args)
@@ -2385,7 +2353,20 @@ func (gcToolchain) ld(b *builder, root *action, out string, allactions []*action
 		ldflags = append(ldflags, "-buildid="+root.p.buildID)
 	}
 	ldflags = append(ldflags, buildLdflags...)
-	return b.run(".", root.p.ImportPath, nil, buildToolExec, tool("link"), "-o", out, importArgs, ldflags, mainpkg)
+
+	// On OS X when using external linking to build a shared library,
+	// the argument passed here to -o ends up recorded in the final
+	// shared library in the LC_ID_DYLIB load command.
+	// To avoid putting the temporary output directory name there
+	// (and making the resulting shared library useless),
+	// run the link in the output directory so that -o can name
+	// just the final path element.
+	dir := "."
+	if goos == "darwin" && buildBuildmode == "c-shared" {
+		dir, out = filepath.Split(out)
+	}
+
+	return b.run(dir, root.p.ImportPath, nil, buildToolExec, tool("link"), "-o", out, importArgs, ldflags, mainpkg)
 }
 
 func (gcToolchain) ldShared(b *builder, toplevelactions []*action, out string, allactions []*action) error {
@@ -2850,7 +2831,7 @@ func (b *builder) ccompilerCmd(envvar, defcmd, objdir string) []string {
 
 	// On OS X, some of the compilers behave as if -fno-common
 	// is always set, and the Mach-O linker in 6l/8l assumes this.
-	// See http://golang.org/issue/3253.
+	// See https://golang.org/issue/3253.
 	if goos == "darwin" {
 		a = append(a, "-fno-common")
 	}
@@ -3123,7 +3104,7 @@ func (b *builder) cgo(p *Package, cgoExe, obj string, pcCFLAGS, pcLDFLAGS, cgofi
 
 	// NOTE(rsc): The importObj is a 5c/6c/8c object and on Windows
 	// must be processed before the gcc-generated objects.
-	// Put it first.  http://golang.org/issue/2601
+	// Put it first.  https://golang.org/issue/2601
 	outObj = stringList(nonGccObjs, ofile)
 
 	return outGo, outObj, nil
