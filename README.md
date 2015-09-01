@@ -2,6 +2,8 @@
 
 **Currently up to date with [go1.5](https://github.com/golang/go/tree/release-branch.go1.5)**
 
+**You want to be sure we didn't sneak any malicious code into the compiler? [Here you go.](https://github.com/golang/go/compare/release-branch.go1.5...nakedgc:master)**
+
 This is a complete fork of the [go repo](https://go.googlesource.com/go/), but it only changes *gc*, the Go Compiler. This version of gc is friendlier than the default version, as you can tell it to shut up about certain errors (like unused variables).
 
 This project aims to provide a drop-in replacement for the standard 'go' executable.
